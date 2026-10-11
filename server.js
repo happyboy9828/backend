@@ -1,6 +1,5 @@
 require('dotenv').config();
 const express = require('express');
-const mongoose = require('mongoose');
 const corsMiddleware = require('./middleware/cors');
 const errorHandler = require('./middleware/errorHandler');
 const { authMiddleware } = require('./middleware/auth');
@@ -9,23 +8,18 @@ const metricsRoutes = require('./routes/metrics');
 const analyticsRoutes = require('./routes/analytics');
 const sessionsRoutes = require('./routes/sessions');
 const pagesRoutes = require('./routes/pages');
+const { connectDB, ensureConnection, getConnectionStatus, mongoose } = require('./utils/db');
 
 const app = express();
 const PORT = process.env.PORT || 8080;
-const MONGODB_URI =
-  process.env.MONGODB_URI || 'mongodb://localhost:27017/mydatabase';
 
 app.use(corsMiddleware);
 app.use(express.json({ limit: '1mb' }));
 
-mongoose
-  .connect(MONGODB_URI)
-  .then(() => console.log('MongoDB connected'))
-  .catch((err) => console.error('MongoDB connection error:', err));
-
-const db = mongoose.connection;
-db.on('error', console.error.bind(console, 'MongoDB connection error:'));
-db.once('open', () => console.log('MongoDB connection established'));
+connectDB().catch((err) => {
+  console.error('Failed to connect to MongoDB:', err.message);
+  process.exit(1);
+});
 
 app.get('/', (req, res) => {
   res.json({ message: 'Welcome to the MERN Backend API' });
@@ -39,53 +33,29 @@ app.get('/health', (req, res) => {
   });
 });
 
-app.get('/status', (req, res) => {
-  const dbStatus = mongoose.connection.readyState;
-  const statusMap = {
-    0: 'disconnected',
-    1: 'connected',
-    2: 'connecting',
-    3: 'disconnecting',
-  };
-
+app.get('/status', async (req, res) => {
+  await ensureConnection();
+  const status = getConnectionStatus();
   let dbName = {};
   let collections = {};
 
-  if (dbStatus === 1 && mongoose.connection.db) {
+  if (status.connected && mongoose.connection.db) {
     dbName = { name: mongoose.connection.db.databaseName };
-    mongoose.connection.db
-      .listCollections()
-      .toArray()
-      .then((cols) => {
-        cols.forEach((col) => {
-          collections[col.name] = {};
-        });
-        res.json({
-          database: statusMap[dbStatus] || 'unknown',
-          readyState: dbStatus,
-          connected: dbStatus === 1,
-          dbName,
-          collections,
-        });
-      })
-      .catch(() => {
-        res.json({
-          database: statusMap[dbStatus] || 'unknown',
-          readyState: dbStatus,
-          connected: dbStatus === 1,
-          dbName: {},
-          collections: {},
-        });
+    try {
+      const cols = await mongoose.connection.db.listCollections().toArray();
+      cols.forEach((col) => {
+        collections[col.name] = {};
       });
-  } else {
-    res.json({
-      database: statusMap[dbStatus] || 'unknown',
-      readyState: dbStatus,
-      connected: dbStatus === 1,
-      dbName: {},
-      collections: {},
-    });
+    } catch (e) {
+      // Ignore collection listing errors
+    }
   }
+
+  res.json({
+    ...status,
+    dbName,
+    collections,
+  });
 });
 
 app.use('/api/track', trackRoutes);
